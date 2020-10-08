@@ -264,7 +264,7 @@ class StbDetThread(Qt.QThread):
         self.NextVds =self.VdSweepVals[self.VdIndex]
 
         self.Timer = Qt.QTimer()
-        self.TimerOut = False
+        # self.TimerOut = False
         # Define the buffer size
         self.Buffer = PltBuffer2D.Buffer2D(self.FsDemod,
                                            nChannels,
@@ -278,7 +278,7 @@ class StbDetThread(Qt.QThread):
                                   FsDemod=self.FsDemod
                                   )
         if self.ACenable:
-             self.PSDPlotVars = ('PSD',)
+            self.PSDPlotVars = ('PSD',)
             self.threadCalcPSD = CalcPSD(**PlotterDemodKwargs)
             self.threadCalcPSD.PSDDone.connect(self.on_PSDDone)
             self.SaveDCAC.PSDSaved.connect(self.on_NextVgs)
@@ -294,20 +294,20 @@ class StbDetThread(Qt.QThread):
 
     def run(self):
         while True:
-            if self.TimerOut is False:
-                if self.Buffer.IsFilled():
-                    self.CalcSlope()
-                    if self.Stable:
-                        self.DataStab.emit()
-                        self.Timer.stop()
-                        self.Timer.deleteLater()
-                        print('IsStable')
-                        if self.ACenable:
-                            self.threadCalcPSD.start()
-                        self.SaveDCAC.SaveDCDict(Ids=self.DCIds,
-                                                 Dev=self.Dev,
-                                                 SwVgsInd=self.VgIndex,
-                                                 SwVdsInd=self.VdIndex)    
+            # if self.TimerOut is False:
+            if self.Buffer.IsFilled():
+                self.CalcSlope()
+                if self.Stable:
+                    self.DataStab.emit()
+                    self.Timer.stop()
+                    self.Timer.deleteLater()
+                    print('IsStable')
+                    if self.ACenable:
+                        self.threadCalcPSD.start()
+                    self.SaveDCAC.SaveDCDict(Ids=self.DCIds,
+                                             Dev=self.Dev,
+                                             SwVgsInd=self.VgIndex,
+                                             SwVdsInd=self.VdIndex)    
                 self.Buffer.Reset()
 
             else:
@@ -324,7 +324,7 @@ class StbDetThread(Qt.QThread):
                 if Diff <= 0:
                     print('Delay Time finished')
                     self.Wait = False
-                    self.TimerOut = False
+                    # self.TimerOut = False
                     self.ElapsedTime = 0
                     self.Timer = Qt.QTimer()
                     self.Timer.timeout.connect(self.printTime)
@@ -340,7 +340,7 @@ class StbDetThread(Qt.QThread):
 
     def printTime(self):
         print('TimeOut')
-        self.TimerOut = True
+        # self.TimerOut = True
         self.Timer.stop()
         self.Timer.deleteLater()
         self.CalcSlope()
