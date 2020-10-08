@@ -55,7 +55,7 @@ classifiers = ['Development Status :: 3 - Alpha',
                'Topic :: Scientific/Engineering',
                'Topic :: Software Development :: User Interfaces']
 
-setup(name="FreqMux",
+setup(name="Modules",
       version=_version,
       description="Library with the Generic Modules made",
       long_description=long_description,
