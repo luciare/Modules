@@ -151,14 +151,7 @@ class Filter():
                                         axis=0,
                                         zi=self.zi
                                         )
-        #probar con filtfilt
-        # sigout = signal.filtfilt(b=self.b,
-        #                          a=self.a,
-        #                          x=Sig,
-        #                          axis=0,
-        #                          padtype='constant',
-        #                          # method='gust'
-        #                         )
+
         return sigout
 
 
@@ -183,24 +176,16 @@ class Demod():
         self.FiltR = Filter(Fs, self.FsOut/2, 'lp', Order)
         self.FiltI = Filter(Fs, self.FsOut/2, 'lp', Order)
         self.FiltH = Filter(Fs, 2*5e3, 'highpass', 4)
-        # self.FiltL = Filter(Fs, 200e3, 'lp', 4)
-        
-        # self.FiltR2 = Filter(Fs, self.FsOut/2, 'lp', Order)
-        # self.FiltI2 = Filter(Fs, self.FsOut/2, 'lp', Order)
 
         self.vcoi = Signal
 
     def Apply(self, SigInput):
         SigIn = self.FiltH.Apply(SigInput)
-        # SigIn = self.FiltH.Apply(SigInHigh)
         rdem = np.real(self.vcoi*SigIn)
         idem = np.imag(self.vcoi*SigIn)
 
         FilterRPart = self.FiltR.Apply(rdem)
         FilterIPart = self.FiltI.Apply(idem)
-        
-        # FilterRPart = self.FiltR2.Apply(FilterRPart)
-        # FilterIPart = self.FiltI2.Apply(FilterIPart)
 
         sObject = slice(None, None, self.DownFact)
 
@@ -208,7 +193,6 @@ class Demod():
         RSidem = FilterIPart[sObject]
 
         complexDem = RSrdem + (RSidem*1j)
-        # complexDem = FilterRPart + (FilterIPart*1j)
 
         return complexDem
 
@@ -273,7 +257,6 @@ class DemodThread(Qt.QThread):
                 self.ToDemData = None
             else:
                 Qt.QThread.msleep(10)
-#        #multiprocessing
 
     def AddData(self, NewData):
         if self.ToDemData is not None:

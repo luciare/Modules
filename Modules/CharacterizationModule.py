@@ -143,6 +143,10 @@ class SweepsConfig(pTypes.GroupParameter):
         self.SvSwParams.param('Save File').sigActivated.connect(self.FileDialog)
 
     def on_Sweeps_Changed(self):
+        '''
+        Creates the numpy arrays used for Vgs and Vds sweeps during the
+        characterization process
+        '''
         self.VgSweepVals = np.linspace(self.VgParams.param('Vinit').value(),
                                        self.VgParams.param('Vfinal').value(),
                                        self.VgParams.param('NSweeps').value())
@@ -162,12 +166,15 @@ class SweepsConfig(pTypes.GroupParameter):
         return self.param('Folder').value()
     
     def GetConfigSweepsParams(self):
-        '''Returns de parameters to do the sweeps
-           SwConfig={'Enable': True,
+        '''Returns parameters to do the sweeps
+           SwConfig={'AEnable': True,
+                     'StabCriteria': Mean,
                      'VgSweep': array([ 0. , -0.1, -0.2, -0.3]),
                      'VdSweep': array([0.1]),
                      'MaxSlope': 1e-10,
-                     'TimeOut': 10
+                     'TimeOut': 10,
+                     'TimeBuffer': 1,
+                     'DelayTime': 1,
                      }
         '''
         SwConfig = {}
@@ -215,31 +222,53 @@ class StbDetThread(Qt.QThread):
     def __init__(self, ACenable, StabCriteria, VdSweep, VgSweep, MaxSlope, TimeOut, 
                  TimeBuffer, DelayTime, nChannels, ChnName, PlotterDemodKwargs, 
                  **kwargs):
-        '''Initialization for Stabilitation Detection Thread
-           VdVals: Array. Contains the values to use in the Vd Sweep.
-                          [0.1, 0.2]
-           VgVals: Array. Contains the values to use in the Vg Sweep
-                          [0., -0.1, -0.2, -0.3]
-           MaxSlope: float. Specifies the maximum slope permited to consider
-                            the system is stabilazed, so the data is correct
-                            to be acquired
-           TimeOut: float. Specifies the maximum amount of time to wait the
-                           signal to achieve MaxSlope, if TimeOut is reached
-                           the data is save even it is not stabilazed
-           nChannels: int. Number of acquisition channels (rows) active
-           ChnName: dictionary. Specifies the name of Row+Column beign
-                                processed and its index:
-                                {'Ch04Col1': 0,
-                                'Ch05Col1': 1,
-                                'Ch06Col1': 2}
-           PlotterDemodKwargs: dictionary. Contains Demodulation Configuration
-                                           an parameters
-                                           {'Fs': 5000.0,
-                                           'nFFT': 8.0,
-                                           'scaling': 'density',
-                                           'nAvg': 50 }
         '''
+        Thread used to do the characterization process of the transistors.
 
+        Parameters
+        ----------
+        ACenable : bool
+            Defines if AC characterization is done.
+        StabCriteria : str
+            Defines the criteria used to determine the stabilization of the 
+            acquired data. It can be:
+                - All channels: All channels must have a slope lower than 
+                                MaxSlope
+                - One Channel: it is enough if only one channel has a slope
+                                lower than MaxSlope
+                - Mean: the arithmetic mean of the slopes of all the channels
+                        must be lower than MaxSlope
+        VdSweep : numpy array
+            Contains the values used for Vds sweep
+        VgSweep : numpy array
+            Contains the values used for Vgs sweep
+        MaxSlope : float
+            The maximum slope permited to consider the data stable.
+        TimeOut : int
+            Maximum time that the system waits for the stabilization of the 
+            acquired data. After TimeOut seconds, the data is processed even
+            though the data has not reached the MaxSlope value
+        TimeBuffer : int
+            Specifies the time laps to acquire the data (buffersize) 
+        DelayTime : int
+            Indicates an amount of time, at the begining of the recording,
+            during which data is not acquired
+        nChannels : int
+            Number of channels enabled
+        ChnName : Dictionary
+            Contains the names from each  channel and its index
+            {'Ch04': 0, 'Ch05': 1, 'Ch06': 2}
+        PlotterDemodKwargs : dictionary
+            Ploter kwargs
+        **kwargs : kwargs
+            Parameters received but not used
+
+        Returns
+        -------
+        None.
+
+        '''
+        
         super(StbDetThread, self).__init__()
         # Init threads and flags
         self.threadCalcPSD = None
@@ -262,9 +291,8 @@ class StbDetThread(Qt.QThread):
         self.VdSweepVals = VdSweep
         self.NextVgs = self.VgSweepVals[self.VgIndex]
         self.NextVds =self.VdSweepVals[self.VdIndex]
-
+        # init the timer
         self.Timer = Qt.QTimer()
-        # self.TimerOut = False
         # Define the buffer size
         self.Buffer = PltBuffer2D.Buffer2D(self.FsDemod,
                                            nChannels,
@@ -277,6 +305,7 @@ class StbDetThread(Qt.QThread):
                                   nFFT=int(PlotterDemodKwargs['nFFT']),
                                   FsDemod=self.FsDemod
                                   )
+        # init the PSD characterization plot
         if self.ACenable:
             self.PSDPlotVars = ('PSD',)
             self.threadCalcPSD = CalcPSD(**PlotterDemodKwargs)
@@ -287,23 +316,34 @@ class StbDetThread(Qt.QThread):
             
         else:
             self.SaveDCAC.DCSaved.connect(self.on_NextVgs)
-        # Define the characterization plots   
+        # Define the DC characterization plots   
         self.DCPlotVars = ('Ids', 'Rds', 'Gm', 'Ig')
         self.PlotSwDC = PyFETpl.PyFETPlot()
         self.PlotSwDC.AddAxes(self.DCPlotVars)
 
     def run(self):
+        '''
+        This function is executed after thread.run() is done and is the main
+        function of the thread. It is executed constantly until the thread
+        is stopped
+        '''
         while True:
-            # if self.TimerOut is False:
+            # Waits until the buffer is filled with the acquired data
             if self.Buffer.IsFilled():
+                # The function CalcSlope is called to determine the stability
                 self.CalcSlope()
                 if self.Stable:
+                    # If the data is stable, a signal is emited
                     self.DataStab.emit()
+                    # And the Timer is stop as TimeOut is not necessary
                     self.Timer.stop()
                     self.Timer.deleteLater()
                     print('IsStable')
+                    # if AC characterization is wanted
                     if self.ACenable:
+                        # The PSD of the data is executed
                         self.threadCalcPSD.start()
+                    # And the DC data is saved before the sweep continuous
                     self.SaveDCAC.SaveDCDict(Ids=self.DCIds,
                                              Dev=self.Dev,
                                              SwVgsInd=self.VgIndex,
@@ -314,40 +354,70 @@ class StbDetThread(Qt.QThread):
                 Qt.QThread.msleep(10)
 
     def AddData(self, NewData):
+        '''
+        Function used to add continuously data to the buffer.
+
+        Parameters
+        ----------
+        NewData : numpy array
+            array with the DC or AC data acquired by the system
+
+        Returns
+        -------
+        None.
+
+        '''
+        # if the data is not stable
         if self.Stable is False:
             while self.Buffer.IsFilled():
+                # if the buffer is filled the data is ignored until the 
+                # characterization process finishes and the buffer is empty
                 continue
-            
+            # if wait is true
             if self.Wait:
+                # the time elapsed since the begining is calculated
                 self.ElapsedTime = self.ElapsedTime+len(NewData[:,0])*(1/self.FsDemod)
                 Diff = self.DelayTime-self.ElapsedTime
+                # when the delay time is finished
                 if Diff <= 0:
                     print('Delay Time finished')
                     self.Wait = False
-                    # self.TimerOut = False
                     self.ElapsedTime = 0
+                    # The TimeOut timer is set and started
                     self.Timer = Qt.QTimer()
                     self.Timer.timeout.connect(self.printTime)
                     self.Timer.setSingleShot(True)
                     self.Timer.start(self.TimeOut*1000)
-                    # self.Timer.singleShot(self.TimeOut*1000, self.printTime)
+            # if wait is false
             else:            
+                # the acquired data is added to the buffer
                 self.Buffer.AddData(NewData)
-               
+        # if AC characterization is required
         if self.ACenable:
+            # and the acquired data is stable
             if self.Stable is True:
+                # the data is added directly processed to calculated the PSD
                 self.threadCalcPSD.AddData(NewData)
 
     def printTime(self):
+        '''
+        This function is executed when TimeOut time is over
+        '''
         print('TimeOut')
-        # self.TimerOut = True
+        # The timer is stopped
         self.Timer.stop()
         self.Timer.deleteLater()
+        # And the final slope is calculated
         self.CalcSlope()
+        # Stable flag is set to True
         self.Stable = True
+        # and the DataStab signal is emited
         self.DataStab.emit()
+        # If AC characterization is required
         if self.ACenable:
+            # PSD thread is started
             self.threadCalcPSD.start()
+        # And the DC data is saved
         self.SaveDCAC.SaveDCDict(Ids=self.DCIds,
                                  Dev=self.Dev,
                                  SwVgsInd=self.VgIndex,
@@ -355,82 +425,154 @@ class StbDetThread(Qt.QThread):
         self.Buffer.Reset()
 
     def CalcSlope(self):
+        '''
+        this Function is used to calculate the slope of the acquired data.
+        the slope is used to determine if the data in the buffer is stable.
+        '''
+        # a Deviation and an Ids numpy arrays are created
         self.Dev = np.ndarray((self.Buffer.shape[1],))
         self.DCIds = np.ndarray((self.Buffer.shape[1], 1))
+        # the buffer data is separate into the different channels
         for ChnInd, dat in enumerate(self.Buffer.transpose()):
             r = len(dat)
             t = np.arange(0, (1/self.FsDemod)*r, (1/self.FsDemod))
+            # with the time and the data, the value of Ids
+            # and the deviation of the curve are obtained
             mm, oo = np.polyfit(t, dat, 1)
             self.Dev[ChnInd] = np.abs(np.mean(mm)) #slope (uA/s)
             self.DCIds[ChnInd] = oo
         print('Dev',self.Dev)
+        # Stab value is set to 0
         Stab = 0
+        # Depending on the stabilization criteria Stab value changes
         if self.StabCriteria == 'All channels':
+            # the deviations of all channels must be considered
             for slope in self.Dev:
+                # If one channel has an slope higher than the MaxSlope
                 if slope > self.MaxSlope:
+                    #Stab is set to -1
                     Stab = -1
+                    # And the loop finishes
                     break
             if Stab == -1:
+                # And Stable variable is set to False
                 self.Stable = False
             else:
-                self.Stable = True 
+                # If none of the channels has a slope higher than MaxSlope
+                # Stable variable is set to True
+                self.Stable = True
+        # If the stabilizaton criteria is that only one channels has to be stable
         elif self.StabCriteria == 'One Channel':
+            # The deviations are checked one after the other
             for slope in self.Dev:
+                # if one slope has a lower value than MaxSlope
                 if slope < self.MaxSlope:
+                    # Stable variable is set to True
                     self.Stable = True
+                    # and the loop finishes
                     break
+        # if stabilization criteria used is the mean of all slopes
         elif self.StabCriteria == 'Mean':
+            # the mean of Deviation is calculated
             slope = np.mean(self.Dev)
+            # If the value is lower than MaxSlope
             if slope < self.MaxSlope:
+                # Stable value is set to True
                 self.Stable = True
                 
     def on_PSDDone(self):
+        '''
+        Function used for saving AC characterization data
+
+        Returns
+        -------
+        None.
+
+        '''
+        # frequencies and data from the PSD thread are obtained
         self.freqs = self.threadCalcPSD.ff
         self.PSDdata = self.threadCalcPSD.psd
+        # The PSD thread is stopped
         self.threadCalcPSD.stop()
+        # And the AC characterization is saved
         self.SaveDCAC.SaveACDict(psd=self.PSDdata,
                                  ff=self.freqs,
                                  SwVgsInd=self.VgIndex,
                                  SwVdsInd=self.VdIndex
                                  )
+        # Finally the PSD characterization plot is updated
         self.UpdateAcPlots(self.SaveDCAC.DevACVals)
 
     def on_NextVgs(self):
+        '''
+        Function executed to change the Vgs value
+        '''
+        # The buffer is reset
         self.Buffer.Reset()
+        # Stable is set to False
         self.Stable = False
+        # The index of Vg is incremented by 1
         self.VgIndex += 1
+        # If the index value is lower than the Vgs sweep array  length
         if self.VgIndex < len(self.VgSweepVals):
+            # The value of Vgs is changed to the next one of the array
             self.NextVgs = self.VgSweepVals[self.VgIndex]
+            # Wait is set to True
             self.Wait = True
             print(self.VgIndex)
+            # and the DC characterization plots are updated
             self.UpdateSweepDcPlots(self.SaveDCAC.DevDCVals)
+            # Finally a signal is emit to notify the change of Vgs
             self.NextVg.emit()
+        # if the sweep of Vgs has finished
         else:
+            # the Index is initialized to 0
             self.VgIndex = 0
+            # and the Vgs value is set to the first value of the array
             self.NextVgs = self.VgSweepVals[self.VgIndex]
+            # DC characterization plots are updated
             self.UpdateSweepDcPlots(self.SaveDCAC.DevDCVals)
+            # finally on_NextVds function is called
             self.on_NextVds()
 
     def on_NextVds(self):
+        '''
+        Function executed to change the Vds value
+        '''
+        # The index of Vd is incremented by 1
         self.VdIndex += 1
-        
+        # IF the index value is lower than the Vds sweep array  length
         if self.VdIndex < len(self.VdSweepVals):
+            # Next value of the array is set as Vds
             self.NextVds = self.VdSweepVals[self.VdIndex]
+            # Wait is set to True
             self.Wait = True
             print(self.VdIndex)
+            # And a signal is emitted to notify the change of Vds
             self.NextVd.emit()
-
+        # If the sweep of Vds has finished
         else:
+            # The index is initialized to 0
             self.VdIndex = 0
+            # and the value of Vds is set to the first value of the sweep array
             self.NextVds = self.VdSweepVals[self.VdIndex]
+            # DC characterization is saved
             self.DCDict = self.SaveDCAC.DevDCVals
+            # If AC characterization is required
             if self.ACenable:
+                # AC characterization is saved
                 self.ACDict = self.SaveDCAC.DevACVals
             else:
+                # otherwise, Ac characterization is saved as None
                 self.ACDict = None
+            # A signal notifying the end of the characterization is emited
             self.CharactEnd.emit()
            
     def UpdateSweepDcPlots(self, Dcdict):
+        '''
+        this function is used to uptade the DC characterization plots
+        '''
+        
         if self.PlotSwDC:
             self.PlotSwDC.ClearAxes()
             self.PlotSwDC.PlotDataCh(Data=Dcdict)
@@ -438,14 +580,21 @@ class StbDetThread(Qt.QThread):
             self.PlotSwDC.Fig.canvas.draw()  
             
     def UpdateAcPlots(self, Acdict):
+        '''
+        this function is used to uptade the AC characterization plots
+        '''
+        
         if self.PlotSwAC:
             self.PlotSwAC.ClearAxes()
             self.PlotSwAC.PlotDataCh(Data=Acdict)
             self.PlotSwAC.Fig.canvas.draw()
             
     def stop(self):
-        # self.Timer.stop()
-        # self.Timer.deleteLater()
+        '''
+        Function used to disconnect the characterization thread emitting 
+        signals, and stop the PSD and the characterization threads
+        '''
+        
         if self.threadCalcPSD is not None:
             self.SaveDCAC.PSDSaved.disconnect()
             self.threadCalcPSD.PSDDone.disconnect()
@@ -457,32 +606,56 @@ class StbDetThread(Qt.QThread):
 class CalcPSD(Qt.QThread):
     PSDDone = Qt.pyqtSignal()
     def __init__(self, Fs, nFFT, nAvg, nChannels, scaling, **kwargs):
-        '''Initialization of the thread that is used to calculate the PSD
-           Fs: float. Sampling Frequency
-           nFFT: float.
-           nAvg: int.
-           nChannels: int. Number of acquisition channels (rows) active
-           scaling: str. Two options, Density or Spectrum
         '''
-        super(CalcPSD, self).__init__()
+        Initialization of the thread that is used to calculate the PSD
 
+        Parameters
+        ----------
+        Fs : float
+            Sampling frequency of the buffered data
+        nFFT : float
+            nperseg of signal.welch. 
+        nAvg : integer
+            DESCRIPTION.
+        nChannels : integer
+            Number of acquisition channels active.
+        scaling : str
+            Two options, Density or Spectrum
+        **kwargs : kwargs
+            Parameters received but not used
+
+        Returns
+        -------
+        None.
+
+        '''
+
+        super(CalcPSD, self).__init__()
+        # class variables are assigned
         self.scaling = scaling
         self.nFFT = 2**nFFT
         self.nChannels = nChannels
         self.Fs = Fs
+        # Buffer size is calculated
         self.BufferSize = self.nFFT * nAvg
+        # A buffer is created
         self.Buffer = PltBuffer2D.Buffer2D(self.Fs, self.nChannels,
                                            self.BufferSize/self.Fs)
 
     def run(self, *args, **kwargs):
         while True:
+            # When the PSD buffer is filled
             if self.Buffer.IsFilled():
+                # the welch is donde to obtain the frequencies and values
+                # of the PSD obtained from the data
                 self.ff, self.psd = welch(self.Buffer,
                                           fs=self.Fs,
                                           nperseg=self.nFFT,
                                           scaling=self.scaling,
                                           axis=0)
+                # The buffer is reset
                 self.Buffer.Reset()
+                # And a signal notifying that PSD has been done is emitted
                 self.PSDDone.emit()
 
             else:
@@ -490,6 +663,21 @@ class CalcPSD(Qt.QThread):
                 Qt.QThread.msleep(200)
 
     def AddData(self, NewData):
+        '''
+        Function used to add the new data to the PSD buffer
+
+        Parameters
+        ----------
+        NewData : numpy array
+            Data acquired that has been considered stable and it is wanted
+            to obtain its PSD
+
+        Returns
+        -------
+        None.
+
+        '''
+        
         self.Buffer.AddData(NewData)
 
     def stop(self):
@@ -518,13 +706,7 @@ class SaveDicts(QObject):
                            5000.0
         '''
         super(SaveDicts, self).__init__()
-        # self.ChNamesList = sorted(Channels)
-        # self.ChannelIndex = {}
 
-        # index = 0
-        # for ch in sorted(Channels):
-        #     self.ChannelIndex[ch] = (index)
-        #     index = index+1
         self.ChNamesList = sorted(Channels)
         self.ChannelIndex = Channels
         self.DevDCVals = self.InitDCRecord(nVds=SwVdsVals,
@@ -637,6 +819,7 @@ class SaveDicts(QObject):
                                                            [5.66067698e-08],
                                                            [5.65991858e-08]
                                                            ]),
+                                             'Dev': array([])
                                              'Vds': array([0.1]),
                                              'Vgs': array([ 0. , -0.1,
                                                            -0.2, -0.3]),
